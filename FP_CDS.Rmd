@@ -1,0 +1,80 @@
+---
+title: "STA437 Final Project"
+date: "2025-03-16"
+output: html_document
+---
+
+# {.tabset}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+cdsdata <- get(load("~/Desktop/Fourth Year/STA437/CDS_data.RData"))
+head(cdsdata)
+
+```
+
+
+## 1. Introduction {.tabset}
+
+### Motivation:
+Why is this dataset interesting for you? What makes it suitable for multivariate analysis
+
+
+### Research Question: 
+What are you trying to uncover in the data? If you follow a guiding question, state it here. Guiding Questions for Analysis
+
+Risk Patterns & Market Conditions
+How do CDS spreads behave in calm vs. crisis periods (e.g., during COVID-19)?
+Are some industries or companies consistently seen as high-risk?
+Multivariate Relationships & Dependencies
+How do CDS spreads for different maturities (short-term vs. long-term) move together for the same company?
+Can we use Principal Component Analysis (PCA) or Canonical Correlation Analysis (CCA) to find key risk factors driving CDS spreads?
+Clustering & Risk Groups
+Can we identify clusters of companies that have similar risk trends? (e.g., using hierarchical clustering or k-means)
+Do companies within the same industry tend to have similar CDS spread behavior?
+Advanced Dependency Analysis
+How do time-varying dependencies between companies evolve? (e.g., using copulas to measure joint risk behavior)
+Can we model the spillover effect—how risk changes in one company affect others?
+
+
+
+
+### Brief Summary of Methods: 
+Mention which multivariate methods you expect to use and why.
+Background (Optional): If applicable, briefly mention any relevant literature, prior knowledge, or similar analyses.
+
+## 2. Data and Preprocessing {.tabset}
+
+### Description of the Dataset: 
+Provide basic summary statistics and visualizations of the dataset.
+
+```{r}
+
+```
+
+
+### Include summary tables and histograms/boxplots where relevant.
+
+### Handling of Missing Data: 
+Describe any missing values and the steps taken to address them.
+
+### Transformations:
+Mention if any transformations (e.g., normalization, log-scaling) were applied.
+
+## 3. Methodology {.tabset}
+
+Describe the multivariate methods used and justify their relevance to your research question.
+
+## 4. Results {.tabset}
+
+### Data Summaries
+
+Present key findings from visualizations and descriptive statistics.
+
+### Interpretation of Findings.
+
+### Conclusion
+How do the results answer your research question? Were the results expected or surprising?
+
