@@ -51,6 +51,71 @@ Background (Optional): If applicable, briefly mention any relevant literature, p
 Provide basic summary statistics and visualizations of the dataset.
 
 ```{r}
+# Number of unique companies
+num_companies <- length(unique(cdsdata$Company))
+cat("Number of unique companies:", num_companies, "\n")
+
+# Summary statistics for PX1 through PX10
+px_columns <- paste0("PX", 1:10)
+summary_stats <- summary(cdsdata[, px_columns])
+print(summary_stats)
+
+# Standard deviation for PX1 through PX10
+sd_values <- sapply(cdsdata[, px_columns], sd, na.rm = TRUE)
+sd_values
+
+# Histograms for PX1 through PX10
+library(ggplot2)
+library(tidyr)
+
+cdsdata_long <- pivot_longer(cdsdata, cols = all_of(px_columns), names_to = "PX", values_to = "Value")
+
+ggplot(cdsdata_long, aes(x = log(Value))) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_wrap(~PX, scales = "free") +
+  theme_minimal() +
+  labs(title = "Histograms for PX1 to PX10")
+
+```
+
+50 companies with greatest variance in PX1
+
+```{r}
+# Number of unique companies
+num_companies <- length(unique(cdsdata$Company))
+cat("Number of unique companies:", num_companies, "\n")
+
+# Summary statistics for PX1 through PX10
+px_columns <- paste0("PX", 1:10)
+summary_stats <- summary(cdsdata[, px_columns])
+print(summary_stats)
+
+# Standard deviation for PX1 through PX10
+sd_values <- sapply(cdsdata[, px_columns], sd, na.rm = TRUE)
+sd_values
+
+# Calculate variance of PX1 for each company
+company_variance <- tapply(cdsdata$PX1, cdsdata$Company, sd, na.rm = TRUE)
+
+# Get the top 50 companies with the greatest variance in PX1
+top_50_companies <- names(sort(company_variance, decreasing = TRUE))[1:10]
+
+# Filter the original dataset to include only these 50 companies
+filtered_data <- cdsdata[cdsdata$Company %in% top_50_companies, ]
+
+# Histograms for PX1 through PX10 for the top 50 companies
+library(ggplot2)
+library(tidyr)
+
+# Reshape the filtered data for plotting
+filtered_data_long <- pivot_longer(filtered_data, cols = all_of(px_columns), names_to = "PX", values_to = "Value")
+
+# Plot histograms
+ggplot(filtered_data_long, aes(x = log(Value))) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_wrap(~PX, scales = "free") +
+  theme_minimal() +
+  labs(title = "Histograms for PX1 to PX10 (Top 50 Companies with Greatest Variance in PX1)")
 
 ```
 
@@ -66,6 +131,62 @@ Mention if any transformations (e.g., normalization, log-scaling) were applied.
 ## 3. Methodology {.tabset}
 
 Describe the multivariate methods used and justify their relevance to your research question.
+
+```{r}
+# Standardizing the CDS data for clustering
+px_data <- filtered_data[, paste0("PX", 1:10)]
+px_scaled <- scale(px_data)
+
+# Calculating the distance matrix (Euclidean distance)
+dist_matrix <- dist(px_scaled, method = "euclidean")
+
+# Performing hierarchical clustering
+hclust_result <- hclust(dist_matrix, method = "ward.D2")
+
+# Plotting the dendrogram
+plot(hclust_result, main = "Dendrogram of Companies", xlab = "Company", ylab = "Distance")
+
+```
+
+```{r}
+# Standardizing the CDS data for clustering
+px_data <- filtered_data[, paste0("PX", 1:10)]
+px_scaled <- scale(px_data)
+
+# Finding the optimal number of clusters using the elbow method
+set.seed(123)  # For reproducibility
+wss <- sapply(1:10, function(k) {
+  kmeans(px_scaled, centers = k, nstart = 25)$tot.withinss
+})
+
+# Plotting the elbow method
+library(ggplot2)
+elbow_data <- data.frame(k = 1:10, WSS = wss)
+ggplot(elbow_data, aes(x = k, y = WSS)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Elbow Method for Optimal Number of Clusters", x = "Number of Clusters", y = "Within-Cluster Sum of Squares")
+
+# Applying K-means clustering with the chosen number of clusters (e.g., k = 3)
+set.seed(123)
+kmeans_result <- kmeans(px_scaled, centers = 3, nstart = 25)
+
+# Adding cluster labels to the dataset
+filtered_data$Cluster <- kmeans_result$cluster
+
+# Visualizing the clusters (e.g., using the first two principal components)
+library(ggplot2)
+pca_result <- prcomp(px_scaled)
+pca_data <- data.frame(PC1 = pca_result$x[, 1], PC2 = pca_result$x[, 2], Cluster = factor(filtered_data$Cluster))
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "K-means Clustering of Companies", x = "Principal Component 1", y = "Principal Component 2")
+
+```
+
 
 ## 4. Results {.tabset}
 
