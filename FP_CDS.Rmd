@@ -16,6 +16,11 @@ head(cdsdata)
 ```
 
 
+mridata <- get(load("~/Desktop/Fourth Year/STA437/ABIDE_YALE.RData"))
+head(mri)
+
+
+
 ## 1. Introduction {.tabset}
 
 ### Motivation:
