@@ -1,0 +1,206 @@
+---
+title: "STA437 Final Project"
+date: "2025-03-26"
+output: html_document
+---
+
+# {.tabset}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(lme4)        # For mixed-effects models
+library(ggplot2)     # For visualization
+library(reshape2)    # For matrix reshaping
+library(igraph)      # For network analysis
+library(corrplot)    # For correlation visualization
+
+load("~/Desktop/Fourth Year/STA437/ABIDE_YALE.RData")
+
+
+dem_mri <- YALE_demo_var
+
+
+```
+
+```{r}
+# Compute summary by DX_GROUP
+demographic_table <- dem_mri %>%
+  group_by(DX_GROUP) %>%
+  summarise(
+    N = n(),
+    `Mean Age (SD)` = sprintf("%.2f (%.2f)", mean(AGE_AT_SCAN, na.rm = TRUE), sd(AGE_AT_SCAN, na.rm = TRUE)),
+    `Male (%)` = sprintf("%d (%.1f%%)", sum(SEX == "1"), 100 * mean(SEX == "1")),
+    `Female (%)` = sprintf("%d (%.1f%%)", sum(SEX == "2"), 100 * mean(SEX == "2"))
+  ) %>%
+  rename(`Diagnosis Group` = DX_GROUP)
+
+# Compute overall summary
+overall_summary <- dem_mri %>%
+  summarise(
+    `Diagnosis Group` = "Overall",
+    N = n(),
+    `Mean Age (SD)` = sprintf("%.2f (%.2f)", mean(AGE_AT_SCAN, na.rm = TRUE), sd(AGE_AT_SCAN, na.rm = TRUE)),
+    `Male (%)` = sprintf("%d (%.1f%%)", sum(SEX == "1"), 100 * mean(SEX == "1")),
+    `Female (%)` = sprintf("%d (%.1f%%)", sum(SEX == "2"), 100 * mean(SEX == "2"))
+  )
+
+# Combine overall row with the grouped summary
+final_table <- bind_rows(demographic_table, overall_summary)
+
+# Print table using kable
+kable(final_table, caption = "Demographic Characteristics", align = "c") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+
+```{r}
+subject_ids <- names(YALE_fmri)
+
+head(YALE_fmri)
+subject_ids
+```
+
+```{r}
+# Compute FC for each subject
+compute_fc <- function(time_series) {
+  cor(time_series)  # Pearson correlation matrix (110 x 110)
+}
+
+# Apply function to all subjects
+fc_matrices <- lapply(YALE_fmri, compute_fc)
+
+# Get subject IDs (assuming order matches demographics)
+subject_ids <- names(YALE_fmri)
+
+# Convert FC matrices to long format
+fc_list <- lapply(1:length(fc_matrices), function(i) {
+  mat <- fc_matrices[[i]]
+  df <- as.data.frame(as.table(mat))  # Convert matrix to long format
+  df$SubjectID <- subject_ids[i]      # Add subject ID
+  return(df)
+})
+
+# Combine all subjects into a single dataframe
+fc_data <- do.call(rbind, fc_list)
+colnames(fc_data) <- c("Region1", "Region2", "FC", "SubjectID")
+
+# Merge with demographics
+fc_data <- merge(fc_data, dem_mri, by = "SubjectID")
+
+```
+
+```{r}
+# Get subject IDs
+subject_ids <- seq_along(fc_matrices)  # If subject names aren't available, use indices
+
+# Convert FC matrices to long format and add SubjectID
+fc_list <- lapply(1:length(fc_matrices), function(i) {
+  mat <- fc_matrices[[i]]
+  df <- as.data.frame(as.table(mat))  # Convert matrix to long format
+  df$SubjectID <- subject_ids[i]      # Add subject ID column
+  return(df)
+})
+
+# Combine all subjects into a single dataframe
+fc_data <- do.call(rbind, fc_list)
+
+# Rename columns correctly
+colnames(fc_data) <- c("Region1", "Region2", "FC", "SubjectID")
+
+# Check output
+head(fc_data)
+
+```
+
+```{r}
+dem_mri$SubjectID <- 1:nrow(dem_mri)
+
+fc_data <- merge(fc_data, dem_mri, by = "SubjectID")
+
+library(lme4)
+lmm <- lmer(FC ~ DX_GROUP + AGE_AT_SCAN + SEX + (1 | SubjectID), data = fc_data)
+summary(lmm)
+
+```
+
+
+
+```{r}
+library(corrplot)
+
+# Compute group-average FC matrices
+avg_fc_autism <- Reduce("+", fc_matrices[dem_mri$DX_GROUP == 1]) / sum(dem_mri$DX_GROUP == 1)
+avg_fc_control <- Reduce("+", fc_matrices[dem_mri$DX_GROUP == 2]) / sum(dem_mri$DX_GROUP == 2)
+
+par(mfrow = c(1, 2))
+corrplot(avg_fc_autism, method = "color", title = "Autism Group", mar = c(0,0,1,0))
+corrplot(avg_fc_control, method = "color", title = "Control Group", mar = c(0,0,1,0))
+
+```
+
+
+
+## 1. Introduction {.tabset}
+
+### Motivation:
+Why is this dataset interesting for you? What makes it suitable for multivariate analysis
+
+
+### Research Question: 
+What are you trying to uncover in the data? If you follow a guiding question, state it here. Guiding Questions for Analysis
+
+
+Understanding Brain Connectivity: 
+How can we detect patterns of brain connectivity from these fMRI recordings? 
+Can we identify distinct functional networks in the brain using this data? 
+
+Comparing Groups (Autism vs. Control): 
+Do brain connectivity patterns differ between individuals with Autism and the Control group? 
+Are there specific brain regions that show different activity between groups? 
+Exploring Demographic Factors: Does age influence brain connectivity patterns? 
+Are there any differences in connectivity between males and females? 
+
+Finding Unique Relationships: 
+Are there connectivity patterns that are specific to individuals with Autism but not present in the Control group? 
+Can we use this data to predict diagnosis based on brain activity alone?
+
+
+
+### Brief Summary of Methods: 
+Mention which multivariate methods you expect to use and why.
+Background (Optional): If applicable, briefly mention any relevant literature, prior knowledge, or similar analyses.
+
+## 2. Data and Preprocessing {.tabset}
+
+### Description of the Dataset: 
+Provide basic summary statistics and visualizations of the dataset.
+
+
+### Include summary tables and histograms/boxplots where relevant.
+
+### Handling of Missing Data: 
+Describe any missing values and the steps taken to address them.
+
+### Transformations:
+Mention if any transformations (e.g., normalization, log-scaling) were applied.
+
+## 3. Methodology {.tabset}
+
+Describe the multivariate methods used and justify their relevance to your research question.
+
+
+## 4. Results {.tabset}
+
+### Data Summaries
+
+Present key findings from visualizations and descriptive statistics.
+
+### Interpretation of Findings.
+
+### Conclusion
+How do the results answer your research question? Were the results expected or surprising?
+
