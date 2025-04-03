@@ -17,14 +17,28 @@ library(ggplot2)     # For visualization
 library(reshape2)    # For matrix reshaping
 library(igraph)      # For network analysis
 library(corrplot)    # For correlation visualization
+library(ggrepel)  # For avoiding label overlap
+library(MASS)     # For classical MDS
+library(CCA)       # For canonical correlation
+library(yacca)     # Alternative CCA package (optional)
+library(CCP)
+library(abind)
+library(pls)
+library(PMA)
+library(caret)     # For classification and performance metrics
+library(e1071)
 
 load("~/Desktop/Fourth Year/STA437/ABIDE_YALE.RData")
 
 
 dem_mri <- YALE_demo_var
 
-
+dem_mri$SubjectID <- 1:nrow(dem_mri)
+str(dem_mri)
+dem_mri$sexnum <- as.numeric(dem_mri$SEX)
 ```
+
+## Demographic table
 
 ```{r}
 # Compute summary by DX_GROUP
@@ -57,150 +71,218 @@ kable(final_table, caption = "Demographic Characteristics", align = "c") %>%
 ```
 
 
-```{r}
-subject_ids <- names(YALE_fmri)
-
-head(YALE_fmri)
-subject_ids
-```
+## PCA
 
 ```{r}
-# Compute FC for each subject
-compute_fc <- function(time_series) {
-  cor(time_series)  # Pearson correlation matrix (110 x 110)
-}
+# Extract subject-level region-mean data 
+region_mean_data <- sapply(YALE_fmri, function(mat) colMeans(mat, na.rm = TRUE))  # Compute mean for each region
 
-# Apply function to all subjects
-fc_matrices <- lapply(YALE_fmri, compute_fc)
+# Transpose to have subjects as rows and regions as columns
+region_mean_data <- t(region_mean_data)
 
-# Get subject IDs (assuming order matches demographics)
-subject_ids <- names(YALE_fmri)
+# Standardize data (center and scale)
+scaled_data <- scale(region_mean_data)
 
-# Convert FC matrices to long format
-fc_list <- lapply(1:length(fc_matrices), function(i) {
-  mat <- fc_matrices[[i]]
-  df <- as.data.frame(as.table(mat))  # Convert matrix to long format
-  df$SubjectID <- subject_ids[i]      # Add subject ID
-  return(df)
-})
+# Run PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
 
-# Combine all subjects into a single dataframe
-fc_data <- do.call(rbind, fc_list)
-colnames(fc_data) <- c("Region1", "Region2", "FC", "SubjectID")
+# Print summary
+summary(pca_result)
 
-# Merge with demographics
-fc_data <- merge(fc_data, dem_mri, by = "SubjectID")
 
-```
 
-```{r}
-# Get subject IDs
-subject_ids <- seq_along(fc_matrices)  # If subject names aren't available, use indices
+# Create a scree plot
+scree_data <- data.frame(PC = seq_along(pca_result$sdev), 
+                         Variance = (pca_result$sdev^2) / sum(pca_result$sdev^2))
 
-# Convert FC matrices to long format and add SubjectID
-fc_list <- lapply(1:length(fc_matrices), function(i) {
-  mat <- fc_matrices[[i]]
-  df <- as.data.frame(as.table(mat))  # Convert matrix to long format
-  df$SubjectID <- subject_ids[i]      # Add subject ID column
-  return(df)
-})
+ggplot(scree_data, aes(x = PC, y = Variance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_line(aes(y = cumsum(Variance)), color = "red", group = 1) +
+  labs(title = "Scree Plot", x = "Principal Components", y = "Proportion of Variance Explained") +
+  theme_minimal()
 
-# Combine all subjects into a single dataframe
-fc_data <- do.call(rbind, fc_list)
+# Extract loadings
+loadings <- as.data.frame(pca_result$rotation)
 
-# Rename columns correctly
-colnames(fc_data) <- c("Region1", "Region2", "FC", "SubjectID")
+# View top contributing regions for PC1 and PC2
+top_PC1 <- loadings[order(abs(loadings$PC1), decreasing = TRUE), ][1:10, ]
+top_PC2 <- loadings[order(abs(loadings$PC2), decreasing = TRUE), ][1:10, ]
 
-# Check output
-head(fc_data)
+print(top_PC1)
+print(top_PC2)
 
-```
 
-```{r}
-dem_mri$SubjectID <- 1:nrow(dem_mri)
+# Create a dataframe for plotting
+pca_scores <- data.frame(SubjectID = 1:nrow(region_mean_data),
+                         PC1 = pca_result$x[,1],
+                         PC2 = pca_result$x[,2],
+                         DX_GROUP = dem_mri$DX_GROUP)
 
-fc_data <- merge(fc_data, dem_mri, by = "SubjectID")
+rownames(region_mean_data) <- names(YALE_fmri)  # Ensure subject IDs are correctly assigned
+pca_scores <- data.frame(SubjectID = 1:nrow(region_mean_data),
+                         PC1 = pca_result$x[,1],
+                         PC2 = pca_result$x[,2])
 
-library(lme4)
-lmm <- lmer(FC ~ DX_GROUP + AGE_AT_SCAN + SEX + (1 | SubjectID), data = fc_data)
-summary(lmm)
+# Check if the merge works
+pca_scores <- merge(pca_scores, dem_mri[, c("SubjectID", "DX_GROUP")], by = "SubjectID", all.x = TRUE)
+
+# Scatter plot of PC1 vs. PC2
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = as.factor(DX_GROUP))) +
+  geom_point(alpha = 0.7) +
+  labs(title = "PCA: PC1 vs. PC2", x = "PC1", y = "PC2", color = "Group") +
+  theme_minimal() +
+  scale_color_manual(values = c("red", "blue"), labels = c("Autism", "Control"))
 
 ```
 
-
+## MDS
 
 ```{r}
-library(corrplot)
+# Compute pairwise distances (Euclidean)
+dist_matrix <- dist(scaled_data)  # Using pre-scaled data from PCA step
 
-# Compute group-average FC matrices
-avg_fc_autism <- Reduce("+", fc_matrices[dem_mri$DX_GROUP == 1]) / sum(dem_mri$DX_GROUP == 1)
-avg_fc_control <- Reduce("+", fc_matrices[dem_mri$DX_GROUP == 2]) / sum(dem_mri$DX_GROUP == 2)
+# Run MDS (classical/Kruskal's non-metric)
+mds_result <- cmdscale(dist_matrix, k = 2, eig = TRUE)  # k=2 for 2D visualization
 
-par(mfrow = c(1, 2))
-corrplot(avg_fc_autism, method = "color", title = "Autism Group", mar = c(0,0,1,0))
-corrplot(avg_fc_control, method = "color", title = "Control Group", mar = c(0,0,1,0))
+mds_scores <- data.frame(
+  SubjectID = 1:nrow(region_mean_data),  # Replace with actual IDs if needed
+  MDS1 = mds_result$points[, 1],
+  MDS2 = mds_result$points[, 2],
+  DX_GROUP = dem_mri$DX_GROUP,  # Diagnosis
+  SEX = dem_mri$SEX,            # Sex (if available)
+  AGE = dem_mri$AGE             # Age (if continuous/categorical)
+)
 
+ggplot(mds_scores, aes(x = MDS1, y = MDS2, color = DX_GROUP)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text_repel(aes(label = SubjectID), size = 3, max.overlaps = 20) +  # Optional labels
+  scale_color_manual(values = c("1" = "#F8766D", "2" = "#00BFC4")) +
+  labs(
+    title = "MDS Plot of fMRI Data (Colored by Diagnosis)",
+    x = "MDS Dimension 1",
+    y = "MDS Dimension 2",
+    color = "Group",
+    levels = c("Autism", "Control"),
+    breaks = c("Autism", "Control")
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+
+
+```
+
+## CCA
+
+```{r}
+
+# Combine fMRI data
+fmri_3d <- abind(YALE_fmri, along=3)  # Creates 196×110×47 array
+region_mean_data <- t(apply(fmri_3d, c(2,3), mean))  # 47×110 matrix
+
+age <- dem_mri$AGE_AT_SCAN
+
+# PLS implementation
+pls_model <- plsr(age ~ region_mean_data, ncomp=10, scale=TRUE)
+X_cca <- pls_model$scores[,1:10]  # Extract scores
+
+# Correct CCA function call
+z_data <- dem_mri[, c("AGE_AT_SCAN", "sexnum")]  # Example variables
+
+# Run CCA with multiple z variables
+cca_result <- CCA(
+  x = scale(X_cca),  # Brain data (47×10)
+  z = scale(z_data), # Demographics (47×3)
+  typex = "standard",
+  typez = "standard",
+  penaltyx = 0.3,
+  penaltyz = 0.3,
+  K = 1
+)
+
+
+perm_results <- CCA.permute(
+  x=scale(X_cca),
+  z=scale(z_data),
+  penaltyxs=seq(0.1,0.5,length=5),
+  nperms=1000
+)
+
+plot_data <- data.frame(
+  Age = age,
+  BrainScore = X_cca %*% cca_result$u,
+  Group = dem_mri$DX_GROUP
+)
+
+ggplot(plot_data, aes(x=Age, y=BrainScore, color=Group)) +
+  geom_point(size=3) +
+  geom_smooth(method="lm") +
+  labs(title=paste("CCA: r =", round(cca_result$cor,2)),
+       subtitle=paste("p =", signif(perm_results$pvals[1],3)))
 ```
 
 
 
-## 1. Introduction {.tabset}
+## Classification
 
-### Motivation:
-Why is this dataset interesting for you? What makes it suitable for multivariate analysis
-
-
-### Research Question: 
-What are you trying to uncover in the data? If you follow a guiding question, state it here. Guiding Questions for Analysis
+```{r}
 
 
-Understanding Brain Connectivity: 
-How can we detect patterns of brain connectivity from these fMRI recordings? 
-Can we identify distinct functional networks in the brain using this data? 
+X <- region_mean_data  # 47 subjects × 110 regions
+y <- factor(dem_mri$DX_GROUP)  # Convert to factor (e.g., "Autism", "Control")
 
-Comparing Groups (Autism vs. Control): 
-Do brain connectivity patterns differ between individuals with Autism and the Control group? 
-Are there specific brain regions that show different activity between groups? 
-Exploring Demographic Factors: Does age influence brain connectivity patterns? 
-Are there any differences in connectivity between males and females? 
+# Dimensionality reduction with PCA
+pca <- prcomp(X, center = TRUE, scale. = TRUE)
+n_components <- which(cumsum(pca$sdev^2/sum(pca$sdev^2)) > 0.95)[1]  # 95% variance
+X_pca <- pca$x[, 1:n_components]
 
-Finding Unique Relationships: 
-Are there connectivity patterns that are specific to individuals with Autism but not present in the Control group? 
-Can we use this data to predict diagnosis based on brain activity alone?
+# Train-test split (80/20)
+set.seed(123)
+train_idx <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X_pca[train_idx, ]
+X_test <- X_pca[-train_idx, ]
+y_train <- y[train_idx]
+y_test <- y[-train_idx]
+
+# LDA classification
+lda_model <- lda(X_train, grouping = y_train)
+
+predictions <- predict(lda_model, X_test)$class
+
+# Confusion matrix
+conf_mat <- confusionMatrix(predictions, y_test)
+print(conf_mat)
+
+# Visualization
+plot_data <- data.frame(
+  PC1 = X_pca[,1],
+  PC2 = X_pca[,2],
+  Group = y,
+  Type = ifelse(seq_along(y) %in% train_idx, "Train", "Test")
+)
+
+ggplot(plot_data, aes(PC1, PC2, color = Group, shape = Type)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = Group), level = 0.95) +
+  labs(title = "PCA-LDA Classification",
+       subtitle = paste("Accuracy:", round(conf_mat$overall['Accuracy'], 2)),
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal()
+
+# SVM 
+
+svm_model <- svm(X_train, y_train)
+svm_pred <- predict(svm_model, X_test)
+confusionMatrix(svm_pred, y_test)
+```
 
 
 
-### Brief Summary of Methods: 
-Mention which multivariate methods you expect to use and why.
-Background (Optional): If applicable, briefly mention any relevant literature, prior knowledge, or similar analyses.
-
-## 2. Data and Preprocessing {.tabset}
-
-### Description of the Dataset: 
-Provide basic summary statistics and visualizations of the dataset.
 
 
-### Include summary tables and histograms/boxplots where relevant.
-
-### Handling of Missing Data: 
-Describe any missing values and the steps taken to address them.
-
-### Transformations:
-Mention if any transformations (e.g., normalization, log-scaling) were applied.
-
-## 3. Methodology {.tabset}
-
-Describe the multivariate methods used and justify their relevance to your research question.
 
 
-## 4. Results {.tabset}
 
-### Data Summaries
-
-Present key findings from visualizations and descriptive statistics.
-
-### Interpretation of Findings.
-
-### Conclusion
-How do the results answer your research question? Were the results expected or surprising?
 
