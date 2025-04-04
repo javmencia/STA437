@@ -226,62 +226,256 @@ ggplot(plot_data, aes(x=Age, y=BrainScore, color=Group)) +
 
 ## Classification
 
+
 ```{r}
+set.seed(437)
+# Clean and prepare data
+classification_data <- data.frame(
+  Diagnosis = factor(dem_mri$DX_GROUP,
+                    levels = c(2, 1),
+                    labels = c("Control", "Case")),  # Use meaningful labels
+  region_mean_data
+) %>% na.omit()
 
+# Verify factor levels
+print(levels(classification_data$Diagnosis))
 
-X <- region_mean_data  # 47 subjects × 110 regions
-y <- factor(dem_mri$DX_GROUP)  # Convert to factor (e.g., "Autism", "Control")
+# Update control to explicitly use Accuracy
+ctrl <- trainControl(method = "cv",
+                    number = 10,
+                    summaryFunction = defaultSummary,  # For Accuracy
+                    classProbs = TRUE,
+                    savePredictions = TRUE)
 
-# Dimensionality reduction with PCA
-pca <- prcomp(X, center = TRUE, scale. = TRUE)
-n_components <- which(cumsum(pca$sdev^2/sum(pca$sdev^2)) > 0.95)[1]  # 95% variance
-X_pca <- pca$x[, 1:n_components]
-
-# Train-test split (80/20)
-set.seed(123)
-train_idx <- createDataPartition(y, p = 0.8, list = FALSE)
-X_train <- X_pca[train_idx, ]
-X_test <- X_pca[-train_idx, ]
-y_train <- y[train_idx]
-y_test <- y[-train_idx]
-
-# LDA classification
-lda_model <- lda(X_train, grouping = y_train)
-
-predictions <- predict(lda_model, X_test)$class
-
-# Confusion matrix
-conf_mat <- confusionMatrix(predictions, y_test)
-print(conf_mat)
-
-# Visualization
-plot_data <- data.frame(
-  PC1 = X_pca[,1],
-  PC2 = X_pca[,2],
-  Group = y,
-  Type = ifelse(seq_along(y) %in% train_idx, "Train", "Test")
+### SVM with PCA ###
+svm_pipeline <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "svmRadial",
+  preProcess = c("center", "scale", "pca"),
+  trControl = ctrl,
+  metric = "Accuracy",  # Force Accuracy metric
+  tuneLength = 5
 )
 
-ggplot(plot_data, aes(PC1, PC2, color = Group, shape = Type)) +
-  geom_point(size = 3, alpha = 0.8) +
-  stat_ellipse(aes(group = Group), level = 0.95) +
-  labs(title = "PCA-LDA Classification",
-       subtitle = paste("Accuracy:", round(conf_mat$overall['Accuracy'], 2)),
-       x = "Principal Component 1",
-       y = "Principal Component 2") +
+# Extract Accuracy properly
+svm_accuracy <- svm_pipeline$results %>% 
+  dplyr::select(C, Accuracy) %>% 
+  filter(!is.na(Accuracy)) %>% 
+  arrange(desc(Accuracy)) %>% 
+  slice(1) %>% 
+  pull(Accuracy)
+
+### LDA with PCA ###
+lda_pipeline <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "lda",
+  preProcess = c("center", "scale", "pca"),
+  trControl = ctrl,
+  metric = "Accuracy"
+)
+
+lda_accuracy <- lda_pipeline$results$Accuracy[1]
+
+### Visualization ###
+results_df <- data.frame(
+  Method = c("SVM", "LDA"),
+  Accuracy = c(svm_accuracy, lda_accuracy)
+)
+
+ggplot(results_df, aes(x = Method, y = Accuracy, fill = Method)) +
+  geom_col() +
+  geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5) +
+  ylim(0, 1) +
+  labs(title = "Classification Accuracy (10-fold CV)",
+       subtitle = paste(nrow(classification_data), "samples with",
+                       ncol(region_mean_data), "features")) +
   theme_minimal()
 
-# SVM 
 
-svm_model <- svm(X_train, y_train)
-svm_pred <- predict(svm_model, X_test)
-confusionMatrix(svm_pred, y_test)
+# Plot SVM decision boundary (first 2 PCs)
+plot_data <- data.frame(
+  PC1 = trainPCA[,1],
+  PC2 = trainPCA[,2],
+  Diagnosis = trainData$Diagnosis
+)
+
+ggplot(plot_data, aes(x = PC1, y = PC2, color = Diagnosis)) +
+  geom_point() +
+  stat_density2d(aes(fill = Diagnosis), alpha = 0.1, geom = "polygon") +
+  labs(title = "SVM Decision Regions (First 2 PCs)",
+       subtitle = paste("Accuracy:", round(svm_accuracy, 3))) +
+  theme_minimal()
+
+# Improved function to handle both models
+print_cv_confusion <- function(model) {
+  # Get predictions
+  if ("bestTune" %in% names(model) && ncol(model$bestTune) > 0) {
+    # For models with tuning parameters (like SVM)
+    preds <- model$pred %>%
+      merge(model$bestTune) %>%  # Select best tune parameters
+      arrange(rowIndex)
+  } else {
+    # For models without tuning (like LDA)
+    preds <- model$pred %>%
+      arrange(rowIndex)
+  }
+  
+  # Create confusion matrix
+  cm <- confusionMatrix(data = preds$pred, 
+                       reference = preds$obs)
+  
+  # Print results
+  cat("\n=== Confusion Matrix for", model$method, "===\n")
+  print(as.table(cm$table))
+  cat("\nClass Statistics:\n")
+  print(round(cm$byClass, 3))
+  cat("\nOverall Accuracy:", round(cm$overall["Accuracy"], 3), "\n")
+}
+
+# Print both matrices
+print_cv_confusion(svm_pipeline)
+print_cv_confusion(lda_pipeline)
 ```
 
 
 
+```{r}
+library(caret)
+library(randomForest)
+library(tidyverse)
 
+# Prepare data with meaningful class labels
+classification_data <- data.frame(
+  Diagnosis = factor(dem_mri$DX_GROUP,
+                    levels = c(2, 1),
+                    labels = c("Control", "Case")),
+  region_mean_data
+) %>% 
+  na.omit() 
 
+# Check class distribution
+cat("Class distribution:\n")
+table(classification_data$Diagnosis)
+
+# Set up control with up-sampling and performance metrics
+ctrl <- trainControl(method = "cv",
+                    number = 10,
+                    sampling = "up",  # Address class imbalance
+                    savePredictions = TRUE,
+                    classProbs = TRUE,
+                    summaryFunction = twoClassSummary)
+
+# Preprocessing steps
+preProc <- c("center", "scale", "nzv", "pca")
+
+### 1. SVM with Tuning ###
+svm_grid <- expand.grid(
+  sigma = c(0.01, 0.1, 1),
+  C = c(0.1, 1, 10, 100)  # Regularization parameters
+)
+
+svm_model <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "svmRadial",
+  preProcess = preProc,
+  trControl = ctrl,
+  tuneGrid = svm_grid,
+  metric = "Sens",  # Focus on sensitivity
+  verbose = FALSE
+)
+
+### 2. LDA ###
+lda_model <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "lda",
+  preProcess = preProc,
+  trControl = ctrl,
+  metric = "Sens"
+)
+
+### 3. Random Forest ###
+rf_grid <- expand.grid(
+  mtry = c(5, 10, 20),  # Number of features at each split
+  splitrule = "gini",
+  min.node.size = c(1, 5, 10)
+)
+
+rf_model <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "ranger",
+  preProcess = preProc,
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  metric = "Sens",
+  importance = "permutation"
+)
+
+### Performance Evaluation ###
+results <- resamples(list(
+  SVM = svm_model,
+  LDA = lda_model,
+  RF = rf_model
+))
+
+# Print summary metrics
+summary(results)
+
+# Custom confusion matrix function
+print_model_results <- function(model) {
+  preds <- model$pred %>% 
+    {if("bestTune" %in% names(model)) merge(., model$bestTune) else .} %>%
+    arrange(rowIndex)
+  
+  cm <- confusionMatrix(preds$pred, preds$obs)
+  
+  cat("\n=== ", model$method, "===\n")
+  print(cm$table)
+  cat("\nAccuracy:", round(cm$overall["Accuracy"], 3))
+  cat(" | Sensitivity:", round(cm$byClass["Sensitivity"], 3))
+  cat(" | Specificity:", round(cm$byClass["Specificity"], 3), "\n")
+  
+  # Variable importance if available
+  if(!is.null(varImp(model))) {
+    cat("\nTop 10 important features:\n")
+    print(varImp(model), top = 10)
+  }
+}
+
+# Print all results
+print_model_results(svm_model)
+print_model_results(lda_model)
+print_model_results(rf_model)
+
+# Visualization
+library(ggplot2)
+
+# Performance comparison plot
+dotplot(results, metric = "ROC")
+
+# Confusion matrix visualization
+plot_confusion <- function(model) {
+  preds <- model$pred %>% 
+    {if("bestTune" %in% names(model)) merge(., model$bestTune) else .} %>%
+    arrange(rowIndex)
+  
+  ggplot(as.data.frame(confusionMatrix(preds$pred, preds$obs)$table),
+         aes(x = Reference, y = Prediction, fill = Freq)) +
+    geom_tile() +
+    geom_text(aes(label = Freq), color = "white") +
+    scale_fill_gradient(low = "blue", high = "red") +
+    ggtitle(paste("Confusion Matrix for", model$method)) +
+    theme_minimal()
+}
+
+plot_confusion(svm_model)
+plot_confusion(lda_model)
+plot_confusion(rf_model)
+```
 
 
 
