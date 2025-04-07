@@ -133,6 +133,21 @@ ggplot(pca_scores, aes(x = PC1, y = PC2, color = as.factor(DX_GROUP))) +
   theme_minimal() +
   scale_color_manual(values = c("red", "blue"), labels = c("Autism", "Control"))
 
+scree_data <- data.frame(
+  PC = seq_along(pca_result$sdev),
+  Variance = (pca_result$sdev^2) / sum(pca_result$sdev^2)
+)
+
+ggplot(scree_data, aes(x = PC, y = Variance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(linewidth = 2, color = "darkred") +
+  scale_x_continuous(breaks = 1:20) +
+  labs(title = "Scree Plot (Variance Explained)", 
+       x = "Principal Component", 
+       y = "Proportion of Variance Explained") +
+  theme_minimal(base_size = 14)+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
 ```
 
 ## MDS
@@ -152,7 +167,7 @@ mds_scores <- data.frame(
   SEX = dem_mri$SEX,            # Sex (if available)
   AGE = dem_mri$AGE             # Age (if continuous/categorical)
 )
-
+mds_scores
 ggplot(mds_scores, aes(x = MDS1, y = MDS2, color = DX_GROUP)) +
   geom_point(size = 3, alpha = 0.7) +
   geom_text_repel(aes(label = SubjectID), size = 3, max.overlaps = 20) +  # Optional labels
@@ -168,10 +183,17 @@ ggplot(mds_scores, aes(x = MDS1, y = MDS2, color = DX_GROUP)) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
+ggplot(mds_scores, aes(x = MDS1, y = MDS2, color = as.factor(DX_GROUP))) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(type = "norm", level = 0.68) +  # 1 SD ellipse
+  labs(title = "MDS Plot with Group Ellipses", x = "MDS1", y = "MDS2", color = "Group") +
+  scale_color_manual(values = c("1" = "#F8766D", "2" = "#00BFC4"), labels = c("Autism", "Control")) +
+  theme_minimal()
 
 
 
 ```
+
 
 ## CCA
 
@@ -222,6 +244,134 @@ ggplot(plot_data, aes(x=Age, y=BrainScore, color=Group)) +
        subtitle=paste("p =", signif(perm_results$pvals[1],3)))
 ```
 
+```{r}
+library(abind)
+# Stack the 196 region-by-110 matrices into a 3D array (196 x 110 x 47)
+fmri_3d <- abind(YALE_fmri, along = 3)  # region x time x subject
+
+# Compute region-mean for each subject: gives a 47 x 196 matrix
+region_mean_data <- apply(fmri_3d, 3, function(x) colMeans(x, na.rm = TRUE))  # 110 x 47
+region_mean_data <- t(region_mean_data)  # Subject (47) x Region (110)
+
+library(pls)
+
+# Extract number of subjects
+n_subjects <- nrow(region_mean_data)
+
+# Dimensionality reduction via PLS
+pls_model <- plsr(dem_mri$AGE_AT_SCAN ~ region_mean_data, ncomp = 10, scale = TRUE)
+X_cca <- pls_model$scores[, 1:10]  # Subject x 10 component matrix
+
+# Choose relevant behavioral variables (standardized)
+z_data <- scale(dem_mri[, c("AGE_AT_SCAN", "sexnum")])
+
+library(PMA)
+
+# Tune regularization parameters with permutations
+set.seed(123)
+perm_results <- CCA.permute(
+  x = scale(X_cca),
+  z = z_data,
+  typex = "standard",
+  typez = "standard",
+  penaltyxs = seq(0.1, 0.5, length = 5),
+  nperms = 1000
+)
+
+# Best penalties
+penaltyx_opt <- perm_results$bestpenaltyx
+penaltyz_opt <- perm_results$bestpenaltyz
+
+# Run CCA with optimal penalties
+cca_result <- CCA(
+  x = scale(X_cca),
+  z = z_data,
+  typex = "standard",
+  typez = "standard",
+  penaltyx = penaltyx_opt,
+  penaltyz = penaltyz_opt,
+  K = 1
+)
+
+# Compute canonical variates (brain × behavior)
+plot_data <- data.frame(
+  Age = dem_mri$AGE_AT_SCAN,
+  BrainScore = as.vector(scale(X_cca) %*% cca_result$u),
+  BehaviorScore = as.vector(z_data %*% cca_result$v),
+  Group = as.factor(dem_mri$DX_GROUP)
+)
+
+library(ggplot2)
+
+# Joint correlation plot
+ggplot(plot_data, aes(x = BrainScore, y = BehaviorScore, color = Group)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = paste0("CCA: r = ", round(cca_result$cor, 2),
+                      ", p = ", signif(perm_results$pvals[1], 3)),
+       x = "Canonical Variate (Brain)",
+       y = "Canonical Variate (Behavior)") +
+  scale_color_manual(values = c("1" = "#F8766D", "2" = "#00BFC4"),
+                     labels = c("Autism", "Control")) +
+  theme_minimal()
+
+region_weights <- data.frame(
+  Region = colnames(region_mean_data),
+  Weight = cca_result$u[, 1]
+)
+
+top_regions <- region_weights[order(abs(region_weights$Weight), decreasing = TRUE), ][1:10, ]
+
+ggplot(top_regions, aes(x = reorder(Region, Weight), y = Weight)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Top Contributing Brain Regions to Canonical Variate",
+       x = "Region",
+       y = "Weight") +
+  theme_minimal()
+
+```
+
+
+## UMAP
+
+```{r}
+library(umap)
+# Extract features (exclude the Diagnosis column)
+features <- classification_data %>% select(-Diagnosis)
+
+# Labels (for coloring plots)
+labels <- classification_data$Diagnosis
+
+# Set UMAP configuration (customize hyperparameters if needed)
+umap_config <- umap.defaults
+umap_config$random_state <- 123  # For reproducibility
+umap_config$n_neighbors <- 15    # Adjust based on data size (default=15)
+umap_config$min_dist <- 0.1      # Controls cluster tightness (default=0.1)
+
+# Run UMAP
+umap_result <- umap(features, config = umap_config)
+
+# Extract embeddings
+umap_embeddings <- data.frame(
+  UMAP1 = umap_result$layout[, 1],
+  UMAP2 = umap_result$layout[, 2],
+  Diagnosis = labels
+)
+# Plot UMAP with group ellipses (similar to your MDS plot)
+ggplot(umap_embeddings, aes(x = UMAP1, y = UMAP2, color = Diagnosis)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, linewidth = 1) +  # 95% confidence ellipses
+  scale_color_manual(values = c("Autism" = "red", "Control" = "blue")) +
+  labs(
+    title = "UMAP Projection of fMRI Regional Activity",
+    subtitle = "Colored by Diagnosis (95% Confidence Ellipses)",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2"
+  ) +
+  theme_minimal()
+```
+
 
 
 ## Classification
@@ -230,147 +380,13 @@ ggplot(plot_data, aes(x=Age, y=BrainScore, color=Group)) +
 
 
 
-```{r}
-library(caret)
-library(randomForest)
-library(tidyverse)
-
-# Prepare data with meaningful class labels
-classification_data <- data.frame(
-  Diagnosis = factor(dem_mri$DX_GROUP,
-                    levels = c(2, 1),
-                    labels = c("Control", "Case")),
-  region_mean_data
-) %>% 
-  na.omit() 
-
-# Check class distribution
-cat("Class distribution:\n")
-table(classification_data$Diagnosis)
-
-# Set up control with up-sampling and performance metrics
-ctrl <- trainControl(method = "cv",
-                    number = 10,
-                    sampling = "up",  # Address class imbalance
-                    savePredictions = TRUE,
-                    classProbs = TRUE,
-                    summaryFunction = twoClassSummary)
-
-# Preprocessing steps
-preProc <- c("center", "scale", "nzv", "pca")
-
-### 1. SVM with Tuning ###
-svm_grid <- expand.grid(
-  sigma = c(0.01, 0.1, 1),
-  C = c(0.1, 1, 10, 100)  # Regularization parameters
-)
-
-svm_model <- train(
-  Diagnosis ~ .,
-  data = classification_data,
-  method = "svmRadial",
-  preProcess = preProc,
-  trControl = ctrl,
-  tuneGrid = svm_grid,
-  metric = "Sens",  # Focus on sensitivity
-  verbose = FALSE
-)
-
-### 2. LDA ###
-lda_model <- train(
-  Diagnosis ~ .,
-  data = classification_data,
-  method = "lda",
-  preProcess = preProc,
-  trControl = ctrl,
-  metric = "Sens"
-)
-
-### 3. Random Forest ###
-rf_grid <- expand.grid(
-  mtry = c(5, 10, 20),  # Number of features at each split
-  splitrule = "gini",
-  min.node.size = c(1, 5, 10)
-)
-
-rf_model <- train(
-  Diagnosis ~ .,
-  data = classification_data,
-  method = "ranger",
-  preProcess = preProc,
-  trControl = ctrl,
-  tuneGrid = rf_grid,
-  metric = "Sens",
-  importance = "permutation"
-)
-
-### Performance Evaluation ###
-results <- resamples(list(
-  SVM = svm_model,
-  LDA = lda_model,
-  RF = rf_model
-))
-
-# Print summary metrics
-summary(results)
-
-# Custom confusion matrix function
-print_model_results <- function(model) {
-  preds <- model$pred %>% 
-    {if("bestTune" %in% names(model)) merge(., model$bestTune) else .} %>%
-    arrange(rowIndex)
-  
-  cm <- confusionMatrix(preds$pred, preds$obs)
-  
-  cat("\n=== ", model$method, "===\n")
-  print(cm$table)
-  cat("\nAccuracy:", round(cm$overall["Accuracy"], 3))
-  cat(" | Sensitivity:", round(cm$byClass["Sensitivity"], 3))
-  cat(" | Specificity:", round(cm$byClass["Specificity"], 3), "\n")
-  
-  # Variable importance if available
-  if(!is.null(varImp(model))) {
-    cat("\nTop 10 important features:\n")
-    print(varImp(model), top = 10)
-  }
-}
-
-# Print all results
-print_model_results(svm_model)
-print_model_results(lda_model)
-print_model_results(rf_model)
-
-# Visualization
-library(ggplot2)
-
-# Performance comparison plot
-dotplot(results, metric = "ROC")
-
-# Confusion matrix visualization
-plot_confusion <- function(model) {
-  preds <- model$pred %>% 
-    {if("bestTune" %in% names(model)) merge(., model$bestTune) else .} %>%
-    arrange(rowIndex)
-  
-  ggplot(as.data.frame(confusionMatrix(preds$pred, preds$obs)$table),
-         aes(x = Reference, y = Prediction, fill = Freq)) +
-    geom_tile() +
-    geom_text(aes(label = Freq), color = "white") +
-    scale_fill_gradient(low = "blue", high = "red") +
-    ggtitle(paste("Confusion Matrix for", model$method)) +
-    theme_minimal()
-}
-
-plot_confusion(svm_model)
-plot_confusion(lda_model)
-plot_confusion(rf_model)
-```
-
 
 ```{r}
 library(caret)
 library(randomForest)
 library(tidyverse)
+
+set.seed(37)
 
 # Prepare data with meaningful class labels
 classification_data <- data.frame(
@@ -386,6 +402,7 @@ classification_data <- data.frame(
 # Check class distribution
 cat("Class distribution:\n")
 table(classification_data$Diagnosis)
+
 
 # Set up control with cross-validation
 ctrl <- trainControl(method = "cv",
@@ -414,13 +431,16 @@ svm_model <- train(
   verbose = FALSE
 )
 
+
 ### 2. Random Forest with Simplified Tuning ###
+# Enhanced RF tuning
 rf_grid <- expand.grid(
-  mtry = c(5, 10, 15),      # Number of features at each split
-  splitrule = "gini",
-  min.node.size = c(1, 5, 10)
+  mtry = c(3, 5, 7, 10, 15, 20),
+  splitrule = c("gini", "extratrees"),
+  min.node.size = c(1, 3, 5, 10)
 )
 
+# Increase number of trees
 rf_model <- train(
   Diagnosis ~ .,
   data = classification_data,
@@ -430,13 +450,13 @@ rf_model <- train(
   tuneGrid = rf_grid,
   metric = "ROC",
   importance = "permutation",
-  num.trees = 500  # Slightly more trees than default
+  num.trees = 1000  # More trees for stability
 )
 
 ### 3. Logistic Regression with Elastic Net ###
 glmnet_grid <- expand.grid(
-  alpha = c(0, 0.5, 1),  # Mix of L1/L2 regularization
-  lambda = 10^seq(-3, 0, length = 10)  # Regularization strength
+  alpha = seq(0, 1, by = 0.1),  # Finer alpha grid
+  lambda = 10^seq(-4, 1, length = 20)  # Wider lambda range
 )
 
 glmnet_model <- train(
@@ -449,11 +469,33 @@ glmnet_model <- train(
   metric = "ROC"
 )
 
+### 4. XGBoost
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100, 150),
+  max_depth = c(3, 6, 9),
+  eta = c(0.01, 0.1, 0.3),
+  gamma = c(0, 0.1, 0.2),
+  colsample_bytree = c(0.6, 0.8, 1),
+  min_child_weight = c(1, 3, 5),
+  subsample = c(0.5, 0.75, 1)
+)
+
+xgb_model <- train(
+  Diagnosis ~ .,
+  data = classification_data,
+  method = "xgbTree",
+  preProcess = preProc,
+  trControl = ctrl,
+  tuneGrid = xgb_grid,
+  metric = "ROC",
+  verbose = FALSE
+)
 ### Performance Evaluation ###
 results <- resamples(list(
   SVM = svm_model,
   RF = rf_model,
-  GLMnet = glmnet_model
+  GLMnet = glmnet_model,
+  XGBoost = xgb_model
 ))
 
 # Print summary metrics
@@ -479,6 +521,7 @@ print_model_results <- function(model) {
 print_model_results(svm_model)
 print_model_results(rf_model)
 print_model_results(glmnet_model)
+print_model_results(xgb_model)
 
 # Visualization
 dotplot(results, metric = "ROC")
